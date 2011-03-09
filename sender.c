@@ -30,9 +30,18 @@
 
 typedef struct {
   
-  int DELETE_ME;     /* used only to make this compile */
-  
-  /* YOUR CODE HERE */
+//  int DELETE_ME;     /* used only to make this compile */
+	int state;	 /* protocol state: normally ESTABLISHED */
+	int sock; 	/* UDP socket descriptor */
+
+	unsigned short swnd;       /* latest advertised sender window */
+	unsigned short NBE;        /* next byte expected */
+	unsigned short LbACK;     /* last byte ACKed */
+	unsigned short LBSent; 	/* last byte Sent not ACKed */
+
+	unsigned short ISN;        /* initial sequence number */
+
+	pktbuf *sendQueue;         /* Pointer to the first node of the send queue */
   
 } stp_send_ctrl_blk;
 
@@ -141,6 +150,8 @@ int main(int argc, char **argv) {
   stp_CB = stp_open(destinationHost, destinationPort, receivePort);
   if (stp_CB == NULL) {
     /* YOUR CODE HERE */
+	perror("stp_control_block cannot be NULL");
+	exit(1);
   }
   
   /* Open file for transfer */
@@ -164,12 +175,16 @@ int main(int argc, char **argv) {
     
     if(stp_send(stp_CB, buffer, num_read_bytes) == STP_ERROR) {
       /* YOUR CODE HERE */
+	perror("STP_ERROR on send");
+	exit(1);
     }
   }
   
   /* Close the connection to remote receiver */   
   if (stp_close(stp_CB) == STP_ERROR) {
     /* YOUR CODE HERE */
+	perror("STP_CLOSE error");
+	exit(1);
   }
   
   return 0;
