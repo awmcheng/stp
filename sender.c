@@ -22,11 +22,13 @@
 #include <sys/uio.h>
 #include <unistd.h>
 #include <sys/file.h>
+#include <time.h>
 
 #include "stp.h"
 
 #define STP_SUCCESS 1
 #define STP_ERROR -1
+#define CLK_TCK 60 // not sure the units??
 
 typedef struct {
   
@@ -49,8 +51,44 @@ typedef struct {
 
 
 /* ADD ANY EXTRA FUNCTIONS HERE */
-// need to implement a timer see snippet from http://www.dreamincode.net/code/snippet2169.htm
+// the following timer is from http://www.dreamincode.net/code/snippet2169.htm
 
+clock_t BeginTimer()
+{
+    //timer declaration
+    clock_t Begin; //initialize Begin
+ 
+    Begin = clock() * CLK_TCK; //start the timer
+ 
+    return Begin;
+}
+clock_t EndTimer(clock_t begin)
+{
+    clock_t End;
+    End = clock() * CLK_TCK;   //stop the timer
+    return End;
+}
+
+// frees the memory for the stp_send_ctrl_blk
+/*
+void FreeStp_Send_CB(struct stp_send_ctrl_blk *stp_send_CB) {
+    if ( stp_send_CB->state )
+	free(stp_send_CB->state);
+    if ( stp_send_CB->sock )
+	free(stp_send_CB->sock);
+    if ( stp_send_CB->swnd )
+	free(stp_send_CB->swnd);
+    if ( stp_send_CB->NBE )
+	free(stp_send_CB->NBE);
+    if ( stp_send_CB->LbACK )
+	free(stp_send_CB->LBSent);
+    if ( stp_send_CB->timer )
+	free(stp_send_CB->timer);
+    if ( stp_send_CB->ISN )
+	free(stp_send_CB->ISN);
+
+}
+*/
 
 /*
  * Send STP. This routine is to send a data packet no greater than
