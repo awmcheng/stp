@@ -39,6 +39,7 @@ typedef struct {
 	unsigned short LbACK;     /* last byte ACKed */
 	unsigned short LBSent; 	/* last byte Sent not ACKed */
 
+	double timer; /* timer for timeouts on SYN and DATA etc */
 	unsigned short ISN;        /* initial sequence number */
 
 	pktbuf *sendQueue;         /* Pointer to the first node of the send queue */
@@ -48,6 +49,7 @@ typedef struct {
 
 
 /* ADD ANY EXTRA FUNCTIONS HERE */
+// need to implement a timer see snippet from http://www.dreamincode.net/code/snippet2169.htm
 
 
 /*
