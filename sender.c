@@ -118,7 +118,7 @@ int stp_send (stp_send_ctrl_blk *stp_CB, unsigned char* data, int length) {
   
   /* YOUR CODE HERE */
   return 0;
-}
+} 
 
 //Creates UDP sockets
 int open_udp(char *destination, int destinationPort,int receivePort)
