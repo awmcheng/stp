@@ -23,28 +23,23 @@
 #include <unistd.h>
 #include <sys/file.h>
 #include <time.h>
-<<<<<<< HEAD
-=======
 #include <string.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
->>>>>>> 9c9f77a825e2b0b9c3deffa8316fcc4a94beb608
 
 #include "stp.h"
 
+#define PKT_SIZE 4096
 #define STP_SUCCESS 1
 #define STP_ERROR -1
 #define CLK_TCK 60 // not sure the units??
-<<<<<<< HEAD
-=======
 
 //Sender states
 #define STP_SYN_SENT   0x24
 #define STP_CLOSING   0x25
 #define FIN_WAIT   0x26	//We do not neet to implement this state.
->>>>>>> 9c9f77a825e2b0b9c3deffa8316fcc4a94beb608
 
 int SenderMaxWin = 5000;        /* Maximum window size */
 typedef struct {
@@ -61,24 +56,15 @@ typedef struct {
 	double timer; /* timer for timeouts on SYN and DATA etc */
 	unsigned short ISN;        /* initial sequence number */
 
-	pktbuf *sendQueue;         /* Pointer to the first node of the send queue */
-<<<<<<< HEAD
-=======
-  
-  
->>>>>>> 9c9f77a825e2b0b9c3deffa8316fcc4a94beb608
-  
+	//pktbuf *sendQueue;         /* Pointer to the first node of the send queue */
+     
 } stp_send_ctrl_blk;
 
 
 
 /* ADD ANY EXTRA FUNCTIONS HERE */
 // the following timer is from http://www.dreamincode.net/code/snippet2169.htm
-<<<<<<< HEAD
-
-=======
 // There is a function called readWithTimer in stp.c and stp.h that deals with time-out issue. 
->>>>>>> 9c9f77a825e2b0b9c3deffa8316fcc4a94beb608
 clock_t BeginTimer()
 {
     //timer declaration
@@ -94,7 +80,6 @@ clock_t EndTimer(clock_t begin)
     End = clock() * CLK_TCK;   //stop the timer
     return End;
 }
-<<<<<<< HEAD
 
 // frees the memory for the stp_send_ctrl_blk
 /*
@@ -114,27 +99,6 @@ void FreeStp_Send_CB(struct stp_send_ctrl_blk *stp_send_CB) {
     if ( stp_send_CB->ISN )
 	free(stp_send_CB->ISN);
 
-=======
-
-// frees the memory for the stp_send_ctrl_blk
-/*
-void FreeStp_Send_CB(struct stp_send_ctrl_blk *stp_send_CB) {
-    if ( stp_send_CB->state )
-	free(stp_send_CB->state);
-    if ( stp_send_CB->sock )
-	free(stp_send_CB->sock);
-    if ( stp_send_CB->swnd )
-	free(stp_send_CB->swnd);
-    if ( stp_send_CB->NBE )
-	free(stp_send_CB->NBE);
-    if ( stp_send_CB->LbACK )
-	free(stp_send_CB->LBSent);
-    if ( stp_send_CB->timer )
-	free(stp_send_CB->timer);
-    if ( stp_send_CB->ISN )
-	free(stp_send_CB->ISN);
-
->>>>>>> 9c9f77a825e2b0b9c3deffa8316fcc4a94beb608
 }
 */
 
@@ -153,7 +117,7 @@ int stp_send (stp_send_ctrl_blk *stp_CB, unsigned char* data, int length) {
   
   /* YOUR CODE HERE */
   return 0;
-} 
+}
 
 //Creates UDP sockets
 int open_udp(char *destination, int destinationPort,int receivePort)
@@ -204,6 +168,7 @@ int open_udp(char *destination, int destinationPort,int receivePort)
           (ntohl(dst)>>24) & 0xFF, (ntohl(dst)>>16) & 0xFF, 
           (ntohl(dst)>>8) & 0XFF, ntohl(dst) & 0XFF , destinationPort);
 	
+	
 	return fd;
 }
 
@@ -225,7 +190,14 @@ int open_udp(char *destination, int destinationPort,int receivePort)
 stp_send_ctrl_blk * stp_open(char *destination, int destinationPort,
                              int receivePort) {
 
-    printf ("Configuring  UDP \"connection\" to %s, sending to port %d listening for data on port %d\n", 
+    unsigned int iseed = (unsigned int) time(NULL);
+	srand(iseed);
+
+	// pseudo random seqnumber to start the tcp communication
+	int tempISN = 5+ (int)((rand()%(100)));
+	printf("MAX_RAND %d\n", tempISN);
+	
+	printf ("Configuring  UDP \"connection\" to %s, sending to port %d listening for data on port %d\n", 
           destination, destinationPort, receivePort);
     
 	stp_send_ctrl_blk *stp_CB = (stp_send_ctrl_blk *) malloc(sizeof(*stp_CB));
@@ -239,21 +211,41 @@ stp_send_ctrl_blk * stp_open(char *destination, int destinationPort,
 	
 	stp_CB->state = STP_SYN_SENT;	 /* protocol state*/
 	stp_CB->swnd = SenderMaxWin;    /* latest advertised sender window */
-	stp_CB->NBE = 0;        /* next byte expected */
-	//stp_CB->LbACK;     /* last byte ACKed */
-	//stp_CB->LBSent; 	/* last byte Sent not ACKed */
+	//stp_CB->NBE = 0;        /* next byte expected */
+	stp_CB->LbACK =0;     /* last byte ACKed */
+	stp_CB->LBSent=0; 	/* last byte Sent not ACKed */
 
-	stp_CB->ISN = 0;        /* initial sequence number */
+	stp_CB->ISN = tempISN;        //initial sequence number should not be zero, this is a random number
 
 	//stp_CB->sendQueue;
   
+	sendpkt(stp_CB-> sock, STP_SYN, 0, stp_CB->ISN, 0,0);
+		
+	char pkt[PKT_SIZE];
+	int readTemp = readWithTimer(stp_CB->sock, pkt, 1000);
+	int numberofTimeouts =0;
+
+	while (readTemp==STP_TIMED_OUT){
+			printf("Sorry timed out... ");
+			numberofTimeouts++;
+			switch (numberofTimeouts)
+			{
+			case 1 : readTemp = readWithTimer(stp_CB->sock, pkt, 2000);
+			break;
+			case 2 : readTemp = readWithTimer(stp_CB->sock, pkt, 4000);
+			break;
+			case 3 : reset(stp_CB->sock);
+			break;
+			}
+		
+	}
+	printf("Received packet back");
 	
+	stp_CB->LbACK = tempISN+1;
+	stp_header *stpHeader = (stp_header *)pkt;
 	
-	
-	sendpkt2(stp_CB-> sock, STP_SYN, stp_CB->swnd, stp_CB->NBE, 0,0,0);
-	
-	//readWithTimer(int fd, char *pkt, int ms);
-	
+	//int readTemp = readpkt(stp_CB->sock, pkt, sizeof(pkt));
+	//printf("%s\n", pkt);
 	return stp_CB;
 }
 
@@ -268,8 +260,44 @@ stp_send_ctrl_blk * stp_open(char *destination, int destinationPort,
  */
 int stp_close(stp_send_ctrl_blk *stp_CB) {
   
-  /* YOUR CODE HERE */
-  return 0;
+  
+	/* This will be for any outstanding data. 
+	while(stp_CB->LbACK != stp_CB->ISN)
+	{
+		//receive rest of packet
+	}*/
+
+	sendpkt(stp_CB->sock, STP_FIN, 0, stp_CB->LbACK, 0,0);
+  
+	char pkt[PKT_SIZE];
+	
+	int readTemp = readWithTimer(stp_CB->sock, pkt, 1000);
+	int numberofTimeouts =0;
+	while (readTemp==STP_TIMED_OUT)
+	{
+		
+		printf("Sorry timed out... ");
+		numberofTimeouts++;
+		switch (numberofTimeouts)
+		{
+			case 1 : readTemp = readWithTimer(stp_CB->sock, pkt, 2000);
+			break;
+			case 2 : readTemp = readWithTimer(stp_CB->sock, pkt, 4000);
+			break;
+			case 3 : reset(stp_CB->sock);
+			break;
+		}
+		
+	}
+	printf("Received packet back");
+	
+	
+  
+	//printf("%s\n",pkt);
+	close(stp_CB->sock);
+	free(stp_CB);
+	
+	return STP_SUCCESS;
 }
 
 
