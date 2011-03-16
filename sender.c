@@ -172,6 +172,76 @@ int open_udp(char *destination, int destinationPort,int receivePort)
 	return fd;
 }
 
+//Returns 0 if two unsigned char are equal. 
+int compareSum(unsigned char* a,unsigned char* b, int size)
+{
+	while(size-- > 0) 
+	{
+		if ( *a != *b ) 
+		{ 
+			return (*a < *b ) ? -1 : 1; 
+		}
+		a++; b++;
+	}
+	return 0;
+
+	
+} 
+
+
+int readPacket(stp_send_ctrl_blk *stp_CB, char *pkt, unsigned short int type)
+{
+	int readTemp = readWithTimer(stp_CB->sock, pkt, 1000);
+	int numberofTimeouts =0;
+	unsigned short seqNum;
+	if(type == STP_FIN)
+	{
+		seqNum = (stp_CB->ISN)+1;
+	}
+	else
+		seqNum = stp_CB->ISN;
+	
+	
+	while (readTemp==STP_TIMED_OUT){
+			printf("Sorry timed out...\n ");
+			
+			numberofTimeouts++;
+			switch (numberofTimeouts)
+			{
+			case 1 : sendpkt(stp_CB-> sock, type, 0, seqNum, 0,0);
+				readTemp = readWithTimer(stp_CB->sock, pkt, 2000);
+				break;
+			case 2 : sendpkt(stp_CB-> sock, type, 0, seqNum, 0,0);
+				readTemp = readWithTimer(stp_CB->sock, pkt, 4000);
+				break;
+			case 3 : reset(stp_CB->sock);
+				break;
+			}
+		
+	}
+	
+	stp_header *stpHeader = (stp_header *) pkt;
+	unsigned char sum = checksum(stpHeader, 0);
+	unsigned char originalSum = stpHeader->checksum;
+	
+	unsigned char* sumPt = &sum;
+	unsigned char* originalSumPt = &originalSum;
+	//printf("Check Sum: %d\n", compareSum(sumPt, originalSumPt, sizeof(sum)));
+	if(compareSum(sumPt, originalSumPt, sizeof(sum)) != 0)
+	{
+		printf("ACK was corrupted. Retransmit\n");
+		memset(pkt, 0, PKT_SIZE);
+		
+		sendpkt(stp_CB-> sock, type, 0, seqNum, 0,0);
+		readTemp = readPacket(stp_CB, pkt,type);
+		
+	}
+	
+	return readTemp;
+}
+
+
+
 /*
  * Open the sender side of the STP connection. Returns the pointer to
  * a newly allocated control block containing the basic information
@@ -209,43 +279,61 @@ stp_send_ctrl_blk * stp_open(char *destination, int destinationPort,
 		return NULL; 
 	}
 	
-	stp_CB->state = STP_SYN_SENT;	 /* protocol state*/
 	stp_CB->swnd = SenderMaxWin;    /* latest advertised sender window */
 	//stp_CB->NBE = 0;        /* next byte expected */
 	stp_CB->LbACK =0;     /* last byte ACKed */
-	stp_CB->LBSent=0; 	/* last byte Sent not ACKed */
-
+	
 	stp_CB->ISN = tempISN;        //initial sequence number should not be zero, this is a random number
+	stp_CB->LBSent=stp_CB->ISN; 	/* last byte Sent not ACKed */
 
 	//stp_CB->sendQueue;
   
 	sendpkt(stp_CB-> sock, STP_SYN, 0, stp_CB->ISN, 0,0);
+	stp_CB->state = STP_SYN_SENT;	 /* protocol state*/
 		
 	char pkt[PKT_SIZE];
-	int readTemp = readWithTimer(stp_CB->sock, pkt, 1000);
-	int numberofTimeouts =0;
-
-	while (readTemp==STP_TIMED_OUT){
-			printf("Sorry timed out... ");
-			numberofTimeouts++;
-			switch (numberofTimeouts)
-			{
-			case 1 : readTemp = readWithTimer(stp_CB->sock, pkt, 2000);
-			break;
-			case 2 : readTemp = readWithTimer(stp_CB->sock, pkt, 4000);
-			break;
-			case 3 : reset(stp_CB->sock);
-			break;
-			}
+	
+	int readTemp = readPacket(stp_CB, pkt, STP_SYN);
+	if (readTemp<0){
+		return NULL;
+	}
+	
+	printf("Received packet back\n");
+	
+	/*
+	stp_header *stpHeader = (stp_header *) pkt;
+	unsigned char sum = checksum(stpHeader, 0);
+	unsigned char originalSum = stpHeader->checksum;
+	
+	unsigned char* sumPt = &sum;
+	unsigned char* originalSumPt = &originalSum;
+	//printf("Check Sum: %d\n", compareSum(sumPt, originalSumPt, sizeof(sum)));
+	if(compareSum(sumPt, originalSumPt, sizeof(sum)) != 0)
+	{
+		printf("ACK was corrupted. Retransmit\n");
+		memset(pkt, 0, PKT_SIZE);
+		
+		sendpkt(stp_CB-> sock, STP_SYN, 0, stp_CB->ISN, 0,0);
+		readTemp = readPacket(stp_CB, pkt,STP_SYN);
 		
 	}
-	printf("Received packet back");
+	*/
 	
-	stp_CB->LbACK = tempISN+1;
-	stp_header *stpHeader = (stp_header *)pkt;
+	stp_CB->state = STP_ESTABLISHED;
+	
+	stp_header *stpHeader = (stp_header *) pkt;
+  	//unsigned short type = ntohs(stpHeader->type);
+  	unsigned short seqno = ntohs(stpHeader->seqno);
+  	unsigned short win = ntohs(stpHeader->window);
+	stp_CB->LbACK = seqno;
+	stp_CB->swnd = win;
+	//dump('r', pkt, readTemp);
+	//stp_CB->LbACK = tempISN+1;
+
 	
 	//int readTemp = readpkt(stp_CB->sock, pkt, sizeof(pkt));
 	//printf("%s\n", pkt);
+	
 	return stp_CB;
 }
 
@@ -259,7 +347,7 @@ stp_send_ctrl_blk * stp_open(char *destination, int destinationPort,
  * block itself. Returns STP_SUCCESS on success or STP_ERROR on error.
  */
 int stp_close(stp_send_ctrl_blk *stp_CB) {
-  
+	stp_CB->state = STP_CLOSING;
   
 	/* This will be for any outstanding data. 
 	while(stp_CB->LbACK != stp_CB->ISN)
@@ -270,30 +358,18 @@ int stp_close(stp_send_ctrl_blk *stp_CB) {
 	sendpkt(stp_CB->sock, STP_FIN, 0, stp_CB->LbACK, 0,0);
   
 	char pkt[PKT_SIZE];
-	
-	int readTemp = readWithTimer(stp_CB->sock, pkt, 1000);
-	int numberofTimeouts =0;
-	while (readTemp==STP_TIMED_OUT)
-	{
-		
-		printf("Sorry timed out... ");
-		numberofTimeouts++;
-		switch (numberofTimeouts)
-		{
-			case 1 : readTemp = readWithTimer(stp_CB->sock, pkt, 2000);
-			break;
-			case 2 : readTemp = readWithTimer(stp_CB->sock, pkt, 4000);
-			break;
-			case 3 : reset(stp_CB->sock);
-			break;
-		}
-		
+	int readTemp = readPacket(stp_CB, pkt, STP_FIN);
+	printf("Read Temp: %d\n", readTemp);
+	if (readTemp<0){
+		close(stp_CB->sock);
+		free(stp_CB);
+		return STP_ERROR;
 	}
-	printf("Received packet back");
 	
 	
   
 	//printf("%s\n",pkt);
+	printf("Connection Closed\n");
 	close(stp_CB->sock);
 	free(stp_CB);
 	
@@ -374,10 +450,12 @@ int main(int argc, char **argv) {
     }
   }
   
+  
+  close(file);
   /* Close the connection to remote receiver */   
   if (stp_close(stp_CB) == STP_ERROR) {
     /* YOUR CODE HERE */
-	perror("STP_CLOSE error");
+	perror("STP_CLOSE error (Receiver is already closed)");
 	exit(1);
   }
   
