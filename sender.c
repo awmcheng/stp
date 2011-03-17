@@ -60,47 +60,80 @@ typedef struct {
      
 } stp_send_ctrl_blk;
 
+//Returns 0 if two unsigned char are equal. 
+int compareSum(unsigned char* a,unsigned char* b, int size)
+{
+	while(size-- > 0) 
+	{
+		if ( *a != *b ) 
+		{ 
+			return (*a < *b ) ? -1 : 1; 
+		}
+		a++; b++;
+	}
+	return 0;
+
+	
+} 
+
+//Read packet (stop and wait approach)
+int readPacket(stp_send_ctrl_blk *stp_CB, char *pkt, unsigned short int type)
+{
+	int readTemp = readWithTimer(stp_CB->sock, pkt, 1000);
+	int numberofTimeouts =0;
+	unsigned short seqNum;
+	if(type == STP_FIN)
+	{
+		seqNum = stp_CB->LbACK;
+	}
+	else if(type==STP_SYN)
+		seqNum = stp_CB->ISN;
+	else
+		seqNum = stp_CB->LbACK;
+	
+	
+	while (readTemp==STP_TIMED_OUT){
+			printf("Sorry timed out...\n ");
+			
+			numberofTimeouts++;
+			switch (numberofTimeouts)
+			{
+			case 1 : sendpkt(stp_CB-> sock, type, 0, seqNum, 0,0);
+				readTemp = readWithTimer(stp_CB->sock, pkt, 2000);
+				break;
+			case 2 : sendpkt(stp_CB-> sock, type, 0, seqNum, 0,0);
+				readTemp = readWithTimer(stp_CB->sock, pkt, 4000);
+				break;
+			case 3 : reset(stp_CB->sock);
+				break;
+			}
+		
+	}
+	
+	stp_header *stpHeader = (stp_header *) pkt;
+	unsigned char sum = checksum(stpHeader, 0);
+	unsigned char originalSum = stpHeader->checksum;
+	
+	unsigned char* sumPt = &sum;
+	unsigned char* originalSumPt = &originalSum;
+	//printf("Check Sum: %d\n", compareSum(sumPt, originalSumPt, sizeof(sum)));
+	if(compareSum(sumPt, originalSumPt, sizeof(sum)) != 0)
+	{
+		printf("ACK was corrupted. Retransmit\n");
+		memset(pkt, 0, PKT_SIZE);
+		
+		sendpkt(stp_CB-> sock, type, 0, seqNum, 0,0);
+		readTemp = readPacket(stp_CB, pkt,type);
+		
+	}
+	
+	return readTemp;
+}
 
 
 /* ADD ANY EXTRA FUNCTIONS HERE */
-// the following timer is from http://www.dreamincode.net/code/snippet2169.htm
-// There is a function called readWithTimer in stp.c and stp.h that deals with time-out issue. 
-clock_t BeginTimer()
-{
-    //timer declaration
-    clock_t Begin; //initialize Begin
- 
-    Begin = clock() * CLK_TCK; //start the timer
- 
-    return Begin;
-}
-clock_t EndTimer(clock_t begin)
-{
-    clock_t End;
-    End = clock() * CLK_TCK;   //stop the timer
-    return End;
-}
 
-// frees the memory for the stp_send_ctrl_blk
-/*
-void FreeStp_Send_CB(struct stp_send_ctrl_blk *stp_send_CB) {
-    if ( stp_send_CB->state )
-	free(stp_send_CB->state);
-    if ( stp_send_CB->sock )
-	free(stp_send_CB->sock);
-    if ( stp_send_CB->swnd )
-	free(stp_send_CB->swnd);
-    if ( stp_send_CB->NBE )
-	free(stp_send_CB->NBE);
-    if ( stp_send_CB->LbACK )
-	free(stp_send_CB->LBSent);
-    if ( stp_send_CB->timer )
-	free(stp_send_CB->timer);
-    if ( stp_send_CB->ISN )
-	free(stp_send_CB->ISN);
 
-}
-*/
 
 /*
  * Send STP. This routine is to send a data packet no greater than
@@ -115,8 +148,30 @@ void FreeStp_Send_CB(struct stp_send_ctrl_blk *stp_send_CB) {
  */
 int stp_send (stp_send_ctrl_blk *stp_CB, unsigned char* data, int length) {
   
-  /* YOUR CODE HERE */
-  return 0;
+  
+  char* data1 = (char *)data;
+  sendpkt(stp_CB->sock, STP_DATA, stp_CB->swnd, stp_CB->LbACK, data1, length);
+  
+  char pkt[PKT_SIZE];
+	
+	int readTemp = readPacket(stp_CB, pkt, STP_DATA);
+	if (readTemp<0){
+		return STP_ERROR;
+	}
+	
+	printf("Received packet back\n");
+	
+	
+	
+	
+	stp_header *stpHeader = (stp_header *) pkt;
+  	//unsigned short type = ntohs(stpHeader->type);
+  	unsigned short seqno = ntohs(stpHeader->seqno);
+  	unsigned short win = ntohs(stpHeader->window);
+	stp_CB->LbACK = seqno;
+	stp_CB->swnd = win;
+  
+  return STP_SUCCESS;
 }
 
 //Creates UDP sockets
@@ -172,73 +227,8 @@ int open_udp(char *destination, int destinationPort,int receivePort)
 	return fd;
 }
 
-//Returns 0 if two unsigned char are equal. 
-int compareSum(unsigned char* a,unsigned char* b, int size)
-{
-	while(size-- > 0) 
-	{
-		if ( *a != *b ) 
-		{ 
-			return (*a < *b ) ? -1 : 1; 
-		}
-		a++; b++;
-	}
-	return 0;
-
-	
-} 
 
 
-int readPacket(stp_send_ctrl_blk *stp_CB, char *pkt, unsigned short int type)
-{
-	int readTemp = readWithTimer(stp_CB->sock, pkt, 1000);
-	int numberofTimeouts =0;
-	unsigned short seqNum;
-	if(type == STP_FIN)
-	{
-		seqNum = (stp_CB->ISN)+1;
-	}
-	else
-		seqNum = stp_CB->ISN;
-	
-	
-	while (readTemp==STP_TIMED_OUT){
-			printf("Sorry timed out...\n ");
-			
-			numberofTimeouts++;
-			switch (numberofTimeouts)
-			{
-			case 1 : sendpkt(stp_CB-> sock, type, 0, seqNum, 0,0);
-				readTemp = readWithTimer(stp_CB->sock, pkt, 2000);
-				break;
-			case 2 : sendpkt(stp_CB-> sock, type, 0, seqNum, 0,0);
-				readTemp = readWithTimer(stp_CB->sock, pkt, 4000);
-				break;
-			case 3 : reset(stp_CB->sock);
-				break;
-			}
-		
-	}
-	
-	stp_header *stpHeader = (stp_header *) pkt;
-	unsigned char sum = checksum(stpHeader, 0);
-	unsigned char originalSum = stpHeader->checksum;
-	
-	unsigned char* sumPt = &sum;
-	unsigned char* originalSumPt = &originalSum;
-	//printf("Check Sum: %d\n", compareSum(sumPt, originalSumPt, sizeof(sum)));
-	if(compareSum(sumPt, originalSumPt, sizeof(sum)) != 0)
-	{
-		printf("ACK was corrupted. Retransmit\n");
-		memset(pkt, 0, PKT_SIZE);
-		
-		sendpkt(stp_CB-> sock, type, 0, seqNum, 0,0);
-		readTemp = readPacket(stp_CB, pkt,type);
-		
-	}
-	
-	return readTemp;
-}
 
 
 
@@ -287,10 +277,10 @@ stp_send_ctrl_blk * stp_open(char *destination, int destinationPort,
 	stp_CB->LBSent=stp_CB->ISN; 	/* last byte Sent not ACKed */
 
 	//stp_CB->sendQueue;
-  
+	
 	sendpkt(stp_CB-> sock, STP_SYN, 0, stp_CB->ISN, 0,0);
 	stp_CB->state = STP_SYN_SENT;	 /* protocol state*/
-		
+	
 	char pkt[PKT_SIZE];
 	
 	int readTemp = readPacket(stp_CB, pkt, STP_SYN);
@@ -367,7 +357,7 @@ int stp_close(stp_send_ctrl_blk *stp_CB) {
 	}
 	
 	
-  
+	//printf("Window: %d\n", stp_CB->swnd);
 	//printf("%s\n",pkt);
 	printf("Connection Closed\n");
 	close(stp_CB->sock);
