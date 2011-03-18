@@ -14,7 +14,8 @@
  *
  *************************************************************************/
 
-
+#include <sys/time.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -29,32 +30,40 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
-#include "stp.h"
+#include <math.h>
 
+
+#include "stp.h"
 #define PKT_SIZE 4096
 #define STP_SUCCESS 1
 #define STP_ERROR -1
-#define CLK_TCK 60 // not sure the units??
+
 
 //Sender states
 #define STP_SYN_SENT   0x24
 #define STP_CLOSING   0x25
 #define FIN_WAIT   0x26	//We do not neet to implement this state.
+#define ARRAYSIZE 25 // ceiling of (receiver window size of 5000 / MTU of 300 ) is 17 so allocating 25
 
 int SenderMaxWin = 5000;        /* Maximum window size */
+
+
 typedef struct {
   
-//  int DELETE_ME;     /* used only to make this compile */
 	int state;	 /* protocol state: normally ESTABLISHED */
 	int sock; 	/* UDP socket descriptor */
 
-	unsigned short swnd;       /* latest advertised sender window */
-	unsigned short NBE;        /* next byte expected */
-	unsigned short LbACK;     /* last byte ACKed */
-	unsigned short LBSent; 	/* last byte Sent not ACKed */
+	unsigned short swnd;       // latest advertised sender window size
+	unsigned short NBE;        // next byte expected - next ACK seq Num expected
+	unsigned short NextSeqNum;     // last byte ACKed = next ACK SEQ Num - length
+	unsigned short LBSent; 	// last byte Sent not ACKed
 
-	double timer; /* timer for timeouts on SYN and DATA etc */
+	unsigned short numBytesInFlight;
 	unsigned short ISN;        /* initial sequence number */
+
+	unsigned short seqArray[25]; // pointer to seqnumber array
+	struct itimerval timeArray[25]; // pointer to array of itimerval DATA
+
 
 	//pktbuf *sendQueue;         /* Pointer to the first node of the send queue */
      
@@ -84,12 +93,13 @@ int readPacket(stp_send_ctrl_blk *stp_CB, char *pkt, unsigned short int type)
 	unsigned short seqNum;
 	if(type == STP_FIN)
 	{
-		seqNum = stp_CB->LbACK;
+		seqNum = stp_CB->NextSeqNum;
 	}
 	else if(type==STP_SYN)
 		seqNum = stp_CB->ISN;
+		
 	else
-		seqNum = stp_CB->LbACK;
+		seqNum = stp_CB->NextSeqNum;
 	
 	
 	while (readTemp==STP_TIMED_OUT){
@@ -130,8 +140,52 @@ int readPacket(stp_send_ctrl_blk *stp_CB, char *pkt, unsigned short int type)
 	return readTemp;
 }
 
+void setTimer(stp_send_ctrl_blk *stp_CB, int ms){
+	// assumes the LBSent is the most recent
+	int i=0;
+	while(i<25){
+		// curious about checking for seqnum of 0
+		// check for 1 sec initial timeout and find check first avail seqArray[i] for 0 and then using index i complete the timeArray[i]
+		if(ms==1000){
+		if(stp_CB->seqArray[i]==0 && (double)stp_CB->timeArray[i].it_value.tv_sec==0.0 && (double)stp_CB->timeArray[i].it_value.tv_usec==0.0){
+			stp_CB->seqArray[i]=stp_CB->LBSent;
+			stp_CB->timeArray[i].it_interval.tv_sec =0; // repeat 0 seconds 
+			stp_CB->timeArray[i].it_interval.tv_usec = 0; // repeat 0 microseconds time
+			stp_CB->timeArray[i].it_value.tv_sec =ms/1000; // set timer to go off in ms/1000 seconds
+			stp_CB->timeArray[i].it_value.tv_usec =0; // microseconds of time to go off in default to 0 microseconds
+			setitimer(ITIMER_REAL, &stp_CB->timeArray[i],0);
+			break;
+			}
+		}
+		else if(ms==2000||ms==4000){
+			if(stp_CB->seqArray[i]==stp_CB->LBSent){
+			stp_CB->timeArray[i].it_interval.tv_sec =0; // repeat 0 seconds 
+			stp_CB->timeArray[i].it_interval.tv_usec = 0; // repeat 0 microseconds time
+			stp_CB->timeArray[i].it_value.tv_sec =ms/1000; // set timer to go off in ms/1000 seconds
+			stp_CB->timeArray[i].it_value.tv_usec =0; // microseconds of time to go off in default to 0microseconds					
+			setitimer(ITIMER_REAL, &stp_CB->timeArray[i],0);
+			break;		
+			}
+		}
+	i++;
+	}
+}
 
-/* ADD ANY EXTRA FUNCTIONS HERE */
+// resets timers after receiving ack, to be called from check ack
+void resetTimer(stp_send_ctrl_blk *stp_CB){
+	int i=0;
+	while (i < 25){
+		if(stp_CB->seqArray[i]==stp_CB->LBSent){
+			stp_CB->seqArray[i]=0;
+			stp_CB->timeArray[i].it_interval.tv_sec =0; // repeat 0 seconds 
+			stp_CB->timeArray[i].it_interval.tv_usec = 0; // repeat 0 microseconds time
+			stp_CB->timeArray[i].it_value.tv_sec =0; // set timer to go off in ms/1000 seconds
+			stp_CB->timeArray[i].it_value.tv_usec =0; // microseconds of time to go off in default to 0microseconds				
+			break;
+		}
+	i++;
+	}
+}
 
 
 
@@ -148,10 +202,18 @@ int readPacket(stp_send_ctrl_blk *stp_CB, char *pkt, unsigned short int type)
  */
 int stp_send (stp_send_ctrl_blk *stp_CB, unsigned char* data, int length) {
   
-  
+
   char* data1 = (char *)data;
-  sendpkt(stp_CB->sock, STP_DATA, stp_CB->swnd, stp_CB->LbACK, data1, length);
-  
+  sendpkt(stp_CB->sock, STP_DATA, stp_CB->swnd, stp_CB->NextSeqNum, data1, length);
+ 
+	//checks if the latest seqno sent is larger than the NBE and stores it as stp_CB->LBSent (last byte sent)
+	// using wraparound methods
+
+// check using greater method from wraparound if seqno is greater than ISN as well as greater than last stp_CB.LBSent
+	if((greater(stp_CB->NextSeqNum, stp_CB->LBSent)==1))
+		stp_CB->LBSent = stp_CB->NextSeqNum; // want to update LBSent to the NextSeqNum
+
+ 
   char pkt[PKT_SIZE];
 	
 	int readTemp = readPacket(stp_CB, pkt, STP_DATA);
@@ -162,18 +224,21 @@ int stp_send (stp_send_ctrl_blk *stp_CB, unsigned char* data, int length) {
 	printf("Received packet back\n");
 	
 	
-	
-	
+		
 	stp_header *stpHeader = (stp_header *) pkt;
   	//unsigned short type = ntohs(stpHeader->type);
   	unsigned short seqno = ntohs(stpHeader->seqno);
   	unsigned short win = ntohs(stpHeader->window);
-	stp_CB->LbACK = seqno;
+	stp_CB->NextSeqNum = seqno;
+	stp_CB->NBE = (seqno+length);
 	stp_CB->swnd = win;
+
+
+	// checkTimer(stp_CB);
   
   return STP_SUCCESS;
 }
-
+ 
 //Creates UDP sockets
 int open_udp(char *destination, int destinationPort,int receivePort)
 {
@@ -262,7 +327,7 @@ stp_send_ctrl_blk * stp_open(char *destination, int destinationPort,
     
 	stp_send_ctrl_blk *stp_CB = (stp_send_ctrl_blk *) malloc(sizeof(*stp_CB));
 	
-	
+		
 	
 	if ((stp_CB->sock = open_udp(destination, destinationPort,receivePort) ) < 0) /* UDP socket descriptor */
 	{
@@ -271,7 +336,7 @@ stp_send_ctrl_blk * stp_open(char *destination, int destinationPort,
 	
 	stp_CB->swnd = SenderMaxWin;    /* latest advertised sender window */
 	//stp_CB->NBE = 0;        /* next byte expected */
-	stp_CB->LbACK =0;     /* last byte ACKed */
+	stp_CB->NextSeqNum =0;     /* last byte ACKed */
 	
 	stp_CB->ISN = tempISN;        //initial sequence number should not be zero, this is a random number
 	stp_CB->LBSent=stp_CB->ISN; 	/* last byte Sent not ACKed */
@@ -315,10 +380,28 @@ stp_send_ctrl_blk * stp_open(char *destination, int destinationPort,
   	//unsigned short type = ntohs(stpHeader->type);
   	unsigned short seqno = ntohs(stpHeader->seqno);
   	unsigned short win = ntohs(stpHeader->window);
-	stp_CB->LbACK = seqno;
+	stp_CB->NextSeqNum = seqno;
 	stp_CB->swnd = win;
+
+	
+
+
+
+	// print out the arrays for testing purpose
+/*
+	int i=0;
+	while(i<25){
+		printf("array seqnum/timer has: at %d :", i);
+		printf("seqnum: %d\n", stp_CB->seqArray[i]);
+		printf("timeArray: %2.1f\n", (double)stp_CB->timeArray[i].tv_sec);
+		i++;
+		
+	}
+*/
+
+
 	//dump('r', pkt, readTemp);
-	//stp_CB->LbACK = tempISN+1;
+	//stp_CB->NextSeqNum = tempISN+1;
 
 	
 	//int readTemp = readpkt(stp_CB->sock, pkt, sizeof(pkt));
@@ -340,12 +423,12 @@ int stp_close(stp_send_ctrl_blk *stp_CB) {
 	stp_CB->state = STP_CLOSING;
   
 	/* This will be for any outstanding data. 
-	while(stp_CB->LbACK != stp_CB->ISN)
+	while(stp_CB->NextSeqNum != stp_CB->ISN)
 	{
 		//receive rest of packet
 	}*/
 
-	sendpkt(stp_CB->sock, STP_FIN, 0, stp_CB->LbACK, 0,0);
+	sendpkt(stp_CB->sock, STP_FIN, 0, stp_CB->NextSeqNum, 0,0);
   
 	char pkt[PKT_SIZE];
 	int readTemp = readPacket(stp_CB, pkt, STP_FIN);
